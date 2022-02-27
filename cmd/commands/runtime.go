@@ -459,14 +459,16 @@ func ensureIngressClass(ctx context.Context, opts *RuntimeInstallOptions) error 
 	var ingressClassNames []string
 	ingressClassNameToController := make(map[string]string)
 	var isValidClass bool
+	// supportedIC := map[string]string{
+	// 	"istio.io/ingress-controller": "",
+	// }
+	supportedIC := map[string]struct{}{"istio.io/ingress-controller": {}}
 	for _, ic := range ingressClassList.Items {
-		if ic.ObjectMeta.Labels["app.kubernetes.io/name"] == "ingress-nginx" {
-			ingressClassNames = append(ingressClassNames, ic.Name)
-			ingressClassNameToController[ic.Name] = fmt.Sprintf("%s-controller", getControllerName(ic.Spec.Controller))
-			if opts.IngressClass == ic.Name {
-				isValidClass = true
-			}
+		if _, ok := supportedIC[ic.Spec.Controller]; ok {
+			ingressClassNameToController[ic.Name] = ic.Spec.Controller
 		}
+		ingressClassNames = append(ingressClassNames, ic.Name)
+		isValidClass = true
 	}
 
 	if opts.IngressClass != "" { //if user provided ingress class by flag
@@ -1623,7 +1625,7 @@ func configureAppProxy(ctx context.Context, opts *RuntimeInstallOptions, rt *run
 			Paths: []ingressutil.IngressPath{
 				{
 					Path:        fmt.Sprintf("/%s", store.Get().AppProxyIngressPath),
-					PathType:    netv1.PathTypeImplementationSpecific,
+					PathType:    netv1.PathTypePrefix,
 					ServiceName: store.Get().AppProxyServiceName,
 					ServicePort: store.Get().AppProxyServicePort,
 				},
