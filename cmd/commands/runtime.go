@@ -54,6 +54,7 @@ import (
 	aputil "github.com/argoproj-labs/argocd-autopilot/pkg/util"
 	argocdv1alpha1 "github.com/argoproj/argo-cd/v2/pkg/apis/application/v1alpha1"
 	aev1alpha1 "github.com/argoproj/argo-events/pkg/apis/eventsource/v1alpha1"
+	oc "github.com/codefresh-io/cli-v2/pkg/util/openshift"
 
 	"github.com/Masterminds/semver/v3"
 	kubeutil "github.com/codefresh-io/cli-v2/pkg/util/kube"
@@ -72,7 +73,7 @@ import (
 	kustid "sigs.k8s.io/kustomize/api/resid"
 	kusttypes "sigs.k8s.io/kustomize/api/types"
 
-	osSecurityV1 "github.com/openshift/api/security/v1"
+	ocSecurityV1 "github.com/openshift/api/security/v1"
 )
 
 type (
@@ -607,9 +608,13 @@ func RunRuntimeInstall(ctx context.Context, opts *RuntimeInstallOptions) error {
 		return util.DecorateErrorWithDocsLink(fmt.Errorf("failed to bootstrap repository: %w", err))
 	}
 
-	err = runOpenshiftSetup(opts, ctx)
+	err = oc.PrepareOpenshiftCluster(ctx, &oc.OpenshiftOptions{
+		KubeFactory:  opts.KubeFactory,
+		RuntimeName:  opts.RuntimeName,
+		InsCloneOpts: opts.InsCloneOpts,
+	})
 	if err != nil {
-		return fmt.Errorf("Failed setting up openshift %w", err)
+		return fmt.Errorf("failed setting up environment for openshift %w", err)
 	}
 
 	err = apcmd.RunProjectCreate(ctx, &apcmd.ProjectCreateOptions{
@@ -2094,57 +2099,55 @@ func initializeGitSourceCloneOpts(opts *RuntimeInstallOptions) {
 	opts.GsCloneOpts.Repo = host + orgRepo + "_git-source" + suffix + "/resources" + "_" + opts.RuntimeName
 }
 
-func runOpenshiftSetup(opts *RuntimeInstallOptions, ctx context.Context) error {
-	// r, fs, err := opts.InsCloneOpts.GetRepo(ctx)
-	// if err != nil {
-	// 	return err
-	// }
+func runOpenshiftSetup(ctx context.Context, opts *RuntimeInstallOptions) error {
+	ok, err := kubeutil.CheckNamespaceExists(ctx, "openshift", opts.KubeFactory)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return nil
+	}
 
-	// overlaysDir := fs.Join(apstore.Default.AppsDir, "app-proxy", apstore.Default.OverlaysDir, rt.Name)
-
-	// sccFilePath := filepath.Join(opts.InsCloneOpts.Repo, "/bootstrap/cluster-resources", "scc.yaml")
-	// log.G().Infof("InsCloseOpts.Path: %s", opts.InsCloneOpts.Repo)
-	// err = ioutil.WriteFile(sccFilePath, data, 0644)
-	// if err != nil {
-	// 	return err
-	// }
-
-	// return nil
+	log.G().Info("Running on an Openshift cluster")
 
 	r, fs, err := opts.InsCloneOpts.GetRepo(ctx)
 	if err != nil {
 		return err
 	}
+	sccPriority := int32(15)
 
-	scc := osSecurityV1.SecurityContextConstraints{
+	scc := ocSecurityV1.SecurityContextConstraints{
 		TypeMeta: metav1.TypeMeta{
-			APIVersion: osSecurityV1.SchemeGroupVersion.Version,
-			
-			Kind: "SecurityContextConstraint",
+			Kind:       "SecurityContextConstraints",
+			APIVersion: "security.openshift.io/v1",
 		},
 		ObjectMeta: metav1.ObjectMeta{
 			Namespace: opts.RuntimeName,
-			Name: store.Get().SccName,
+			Name:      store.Get().SccName,
 		},
 		AllowPrivilegedContainer: false,
-		RunAsUser: osSecurityV1.RunAsUserStrategyOptions{
-			Type: osSecurityV1.RunAsUserStrategyRunAsAny,
+		RunAsUser: ocSecurityV1.RunAsUserStrategyOptions{
+			Type: ocSecurityV1.RunAsUserStrategyRunAsAny,
 		},
-		SELinuxContext: osSecurityV1.SELinuxContextStrategyOptions{
-			Type: osSecurityV1.SELinuxStrategyRunAsAny,
+		SELinuxContext: ocSecurityV1.SELinuxContextStrategyOptions{
+			Type: ocSecurityV1.SELinuxStrategyRunAsAny,
 		},
-		FSGroup: osSecurityV1.FSGroupStrategyOptions{
-			Type: osSecurityV1.FSGroupStrategyRunAsAny,
+		FSGroup: ocSecurityV1.FSGroupStrategyOptions{
+			Type: ocSecurityV1.FSGroupStrategyRunAsAny,
 		},
-		SupplementalGroups: osSecurityV1.SupplementalGroupsStrategyOptions{
-			Type: osSecurityV1.SupplementalGroupsStrategyRunAsAny,
+		SupplementalGroups: ocSecurityV1.SupplementalGroupsStrategyOptions{
+			Type: ocSecurityV1.SupplementalGroupsStrategyRunAsAny,
 		},
 		Users: []string{
 			fmt.Sprintf("system:serviceaccount:%s:argo-events-sa", opts.RuntimeName),
+			fmt.Sprintf("system:serviceaccount:%s:argo-events-webhook-sa", opts.RuntimeName),
+			fmt.Sprintf("system:serviceaccount:%s:argo-server", opts.RuntimeName),
+			fmt.Sprintf("system:serviceaccount:%s:cap-app-proxy", opts.RuntimeName),
 		},
+		Priority: &sccPriority,
 	}
 
-	clusterResourcesDir := fs.Join(apstore.Default.BootsrtrapDir, apstore.Default.ClusterResourcesDir)
+	clusterResourcesDir := fs.Join(apstore.Default.BootsrtrapDir, apstore.Default.ClusterResourcesDir, "in-cluster")
 
 	if err = fs.WriteYamls(fs.Join(clusterResourcesDir, "scc.yaml"), scc); err != nil {
 		return err
