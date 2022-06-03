@@ -124,7 +124,7 @@ spec:
                   name: cap-app-proxy-cm
                   key: stripPrefix
                   optional: true
-          image: quay.io/codefresh/cap-app-proxy:pip-e2e
+          image: quay.io/codefresh/cap-app-proxy
           imagePullPolicy: Always
           name: cap-app-proxy
           readinessProbe:
